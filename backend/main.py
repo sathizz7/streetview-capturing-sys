@@ -1,0 +1,299 @@
+"""
+Building Detection V2 - Main Pipeline Orchestrator
+
+This module provides the main entry point for the building capture pipeline.
+It orchestrates all pipeline stages from road discovery to final analysis.
+
+Usage:
+    python main.py --lat 17.408 --lon 78.450
+"""
+
+import asyncio
+import argparse
+import json
+import logging
+import time
+from typing import Dict, List, Optional, Any
+
+from config import get_settings
+from models import Viewpoint, CaptureResult, BuildingAnalysis
+from services import GoogleMapsService, reverse_geocode
+from pipeline import RoadFinder, ViewpointGenerator
+from agents import FaceScreeningAgent, RefinementAgent, AnalysisAgent
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
+logger = logging.getLogger(__name__)
+
+
+class BuildingCapturePipeline:
+    """
+    V2 Pipeline - Lat/Long Only Input
+    
+    Captures building images using only latitude/longitude coordinates.
+    Does not require polygon/face data.
+    
+    Pipeline Steps:
+    1. Find nearby roads (360° sampling)
+    2. Generate viewpoints facing the building
+    3. Validate Street View availability
+    4. Screen faces with LLM
+    5. Refine captures with LLM
+    6. Analyze building with LLM
+    """
+    
+    def __init__(self):
+        """Initialize pipeline components."""
+        self.settings = get_settings()
+        
+        # Initialize services
+        self.maps_service = GoogleMapsService()
+        
+        # Initialize pipeline stages
+        self.road_finder = RoadFinder(self.maps_service)
+        self.viewpoint_generator = ViewpointGenerator()
+        
+        # Initialize agents
+        self.face_screening_agent = FaceScreeningAgent()
+        self.refinement_agent = RefinementAgent(self.maps_service)
+        self.analysis_agent = AnalysisAgent()
+        
+        logger.info("Building Capture Pipeline V2 initialized")
+    
+    async def capture_building(self, lat: float, lon: float) -> Dict[str, Any]:
+        """
+        Main entry point: Capture a building using only lat/long.
+        
+        Args:
+            lat: Building latitude
+            lon: Building longitude
+            
+        Returns:
+            Dict with captures, analysis, and metadata
+        """
+        logger.info("=" * 70)
+        logger.info(" BUILDING DETECTION V2 - LAT/LONG ONLY PIPELINE")
+        logger.info("=" * 70)
+        logger.info(f"Target: ({lat}, {lon})")
+        
+        start_time = time.time()
+        
+        try:
+            # Step 1: Find nearby roads
+            logger.info("Step 1: Finding nearby roads...")
+            road_points = await self.road_finder.find_candidate_roads(lat, lon)
+            
+            if not road_points:
+                return self._error_result("No roads found near building")
+            
+            logger.info(f"Found {len(road_points)} road points")
+            
+            # Step 2: Generate viewpoints
+            logger.info("Step 2: Generating viewpoints...")
+            viewpoints = self.viewpoint_generator.generate_viewpoints(
+                lat, lon, road_points
+            )
+            logger.info(f"Generated {len(viewpoints)} viewpoints")
+            
+            # Step 3: Validate Street View availability
+            logger.info("Step 3: Validating Street View availability...")
+            validated_viewpoints = await self._validate_streetview(viewpoints)
+            
+            if not validated_viewpoints:
+                return self._error_result("No Street View coverage at any viewpoint")
+            
+            logger.info(f"Validated {len(validated_viewpoints)} viewpoints")
+            
+            # Step 4: Screen faces with LLM
+            logger.info("Step 4: Screening faces...")
+            screened_viewpoints = await self._screen_faces(validated_viewpoints)
+            
+            valid_faces = [v for v, s in screened_viewpoints if s and s.is_valid_front_face]
+            logger.info(f"Valid front faces: {len(valid_faces)}/{len(screened_viewpoints)}")
+            
+            # Step 5: Refine captures
+            logger.info("Step 5: Refining captures...")
+            capture_results = await self._refine_captures(
+                screened_viewpoints, lat, lon
+            )
+            logger.info(f"Refined {len(capture_results)} captures")
+            
+            # Step 6: Analyze building
+            logger.info("Step 6: Analyzing building...")
+            
+            # Get address
+            address = reverse_geocode(lat, lon)
+            
+            # Get best images for analysis
+            analysis_urls = self._get_analysis_images(capture_results)
+            analysis = await self.analysis_agent.analyze_building(
+                analysis_urls, address
+            )
+            
+            elapsed = time.time() - start_time
+            logger.info(f"Pipeline complete in {elapsed:.2f}s")
+            
+            return self._format_results(capture_results, analysis, lat, lon, elapsed)
+            
+        except Exception as e:
+            logger.error(f"Pipeline error: {e}", exc_info=True)
+            return self._error_result(str(e))
+    
+    async def _validate_streetview(
+        self, 
+        viewpoints: List[Viewpoint]
+    ) -> List[Viewpoint]:
+        """Validate Street View availability and update viewpoints with pano_id."""
+        validated = []
+        
+        for viewpoint in viewpoints:
+            metadata = await self.maps_service.get_streetview_metadata(
+                viewpoint.lat, viewpoint.lon,
+                radius=self.settings.streetview_metadata_radius
+            )
+            
+            if metadata and metadata.get("status") == "OK":
+                # Update with actual location from metadata
+                actual_loc = metadata["location"]
+                viewpoint.lat = actual_loc["lat"]
+                viewpoint.lon = actual_loc["lng"]
+                viewpoint.pano_id = metadata.get("pano_id")
+                viewpoint.capture_date = metadata.get("date")
+                validated.append(viewpoint)
+        
+        return validated
+    
+    async def _screen_faces(
+        self, 
+        viewpoints: List[Viewpoint]
+    ) -> List[tuple]:
+        """Screen viewpoints with face screening agent."""
+        # Generate image URLs
+        candidates = []
+        for i, vp in enumerate(viewpoints):
+            url = self.maps_service.generate_streetview_url(vp)
+            candidates.append({
+                "candidate_index": i,
+                "image_url": url,
+            })
+        
+        # Screen with LLM
+        screening_results = await self.face_screening_agent.screen_faces(candidates)
+        
+        # Pair viewpoints with screening results
+        return [
+            (viewpoints[i], screening_results.get(i))
+            for i in range(len(viewpoints))
+        ]
+    
+    async def _refine_captures(
+        self, 
+        screened: List[tuple],
+        building_lat: float,
+        building_lon: float
+    ) -> List[CaptureResult]:
+        """Refine valid captures using refinement agent (parallel execution)."""
+        
+        async def refine_single(viewpoint: Viewpoint, screening) -> Optional[CaptureResult]:
+            """Process a single viewpoint asynchronously."""
+            # Skip invalid faces
+            if not screening or not screening.is_valid_front_face:
+                return None
+            
+            # Refine if needed
+            if screening.needs_refinement:
+                refined = await self.refinement_agent.refine_capture(
+                    viewpoint, building_lat, building_lon
+                )
+                
+                return CaptureResult(
+                    image_url=refined["image_url"],
+                    viewpoint=refined.get("viewpoint", viewpoint),
+                    screening_result=screening,
+                    refinement_history=refined.get("refinement_history", []),
+                    is_refined=refined.get("is_refined", False),
+                    final_quality_score=refined.get("final_quality", 0),
+                )
+            else:
+                return CaptureResult(
+                    image_url=self.maps_service.generate_streetview_url(viewpoint),
+                    viewpoint=viewpoint,
+                    screening_result=screening,
+                    is_refined=False,
+                )
+        
+        # Run all refinements in parallel
+        tasks = [refine_single(vp, sc) for vp, sc in screened]
+        results = await asyncio.gather(*tasks)
+        
+        # Filter out None results (invalid faces)
+        return [r for r in results if r is not None]
+    
+    def _get_analysis_images(self, captures: List[CaptureResult]) -> List[str]:
+        """Get best image URLs for building analysis."""
+        # Sort by quality and return URLs
+        sorted_captures = sorted(
+            captures,
+            key=lambda c: c.final_quality_score,
+            reverse=True
+        )
+        return [c.image_url for c in sorted_captures[:5]]  # Top 5 images
+    
+    def _format_results(
+        self,
+        captures: List[CaptureResult],
+        analysis: Optional[BuildingAnalysis],
+        lat: float,
+        lon: float,
+        elapsed: float
+    ) -> Dict[str, Any]:
+        """Format final results."""
+        return {
+            "status": "success",
+            "building_location": {"lat": lat, "lon": lon},
+            "pipeline_version": "2.0",
+            "execution_time_seconds": round(elapsed, 2),
+            "captures_count": len(captures),
+            "captures": [c.to_dict() for c in captures],
+            "building_analysis": analysis.to_dict() if analysis else None,
+        }
+    
+    def _error_result(self, message: str) -> Dict[str, Any]:
+        """Format error result."""
+        return {
+            "status": "error",
+            "message": message,
+            "pipeline_version": "2.0",
+        }
+
+
+async def main():
+    """CLI entry point."""
+    parser = argparse.ArgumentParser(
+        description="Building Detection V2 - Capture building using lat/long"
+    )
+    parser.add_argument("--lat", type=float, required=True, help="Building latitude")
+    parser.add_argument("--lon", "--long", dest="lon", type=float, required=True, help="Building longitude")
+    parser.add_argument("--output", type=str, help="Output JSON file path")
+    
+    args = parser.parse_args()
+    
+    pipeline = BuildingCapturePipeline()
+    result = await pipeline.capture_building(args.lat, args.lon)
+    
+    # Output
+    output_json = json.dumps(result, indent=2)
+    
+    if args.output:
+        with open(args.output, "w") as f:
+            f.write(output_json)
+        logger.info(f"Results written to {args.output}")
+    else:
+        print(output_json)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

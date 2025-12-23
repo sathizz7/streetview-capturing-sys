@@ -1,0 +1,15 @@
+python main.py --lat 17.40835441 --long 78.45018137
+
+python main.py --lat 17.40828951 --long 78.45042450
+
+python main.py --lat 17.40829838 --long 78.44983443
+
+python main.py --lat 17.40827965 --long 78.45058070
+
+python main.py --lat 17.40828951 --long 78.45042450
+
+python main.py --lat 17.40825329 --long 78.44931239
+
+#office -- python main.py --lat 12.974378709549043 --long 80.24956280449447
+
+python main.py --lat 17.41155948 --long 78.43503818
