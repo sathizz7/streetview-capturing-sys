@@ -1,0 +1,82 @@
+# Environment files
+.env
+.env.local
+.env.*.local
+*.env
+env/
+ENV/
+venv/
+.venv/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+ENV/
+env/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+*.temp
+
+# Backup files
+backup.py
+backup2.py
+test.py
+
+data/
+
+aws_sam/
+samconfig.toml
+run.py
+git_cmd.txt
+# Build folder
+
+*/build/*
+
+.aws-sam/
+.aws-sam/*
+
+.aws-sam/build.toml
+
+# Build folder
+.aws-sam/build.toml
+*/build/*
+.aws-sam
+.aws-sam/
+.aws-sam/*
