@@ -114,10 +114,15 @@ class BuildingCapturePipeline:
             valid_faces = [v for v, s in screened_viewpoints if s and s.is_valid_front_face]
             logger.info(f"Valid front faces: {len(valid_faces)}/{len(screened_viewpoints)}")
             
-            # Step 5: Refine captures
+            # Step 4.5: Select best 1- 5 images
+            logger.info("Step 4.5: Selecting best images...")
+            best_viewpoints = self._select_best_images(screened_viewpoints, max_images=5)
+            logger.info(f"Selected {len(best_viewpoints)} best images")
+            
+            # Step 5: Refine captures (only for selected best)
             logger.info("Step 5: Refining captures...")
             capture_results = await self._refine_captures(
-                screened_viewpoints, lat, lon
+                best_viewpoints, lat, lon
             )
             logger.info(f"Refined {len(capture_results)} captures")
             
@@ -168,7 +173,7 @@ class BuildingCapturePipeline:
     
     async def _screen_faces(
         self, 
-        viewpoints: List[Viewpoint]
+        viewpoints: List[Viewpoint]     
     ) -> List[tuple]:
         """Screen viewpoints with face screening agent."""
         # Generate image URLs
@@ -188,6 +193,85 @@ class BuildingCapturePipeline:
             (viewpoints[i], screening_results.get(i))
             for i in range(len(viewpoints))
         ]
+    
+    def _select_best_images(
+        self, 
+        screened: List[tuple],
+        max_images: int = 3
+    ) -> List[tuple]:
+        """
+        Select top 1-3 best images based on intelligent criteria.
+        
+        Selection priority:
+        1. is_target_building_primary = True
+        2. is_road_dominated = False
+        3. building_coverage_pct >= 50
+        4. clarity_assessment in ["excellent", "good"]
+        5. is_valid_front_face = True
+        
+        Diversity: max 1-2 images per group_id
+        """
+        # Filter to valid candidates
+        valid_candidates = []
+        for vp, screening in screened:
+            if not screening:
+                continue
+            if not screening.is_valid_front_face:
+                continue
+            if not screening.is_target_building_primary:
+                logger.info(f"Rejected: target building not primary (idx={screening.candidate_index})")
+                continue
+            if screening.is_road_dominated:
+                logger.info(f"Rejected: road dominated (idx={screening.candidate_index})")
+                continue
+            valid_candidates.append((vp, screening))
+        
+        if not valid_candidates:
+            logger.warning("No valid candidates after filtering, using all screened images")
+            valid_candidates = [(vp, sc) for vp, sc in screened if sc and sc.is_valid_front_face]
+        
+        # Score each candidate
+        def score_candidate(item):
+            vp, screening = item
+            score = 0
+            
+            # Building coverage (0-100 points)
+            score += screening.building_coverage_pct
+            
+            # Clarity bonus
+            clarity_scores = {"excellent": 30, "good": 20, "acceptable": 10, "poor": 0}
+            score += clarity_scores.get(screening.clarity_assessment, 0)
+            
+            # Primary in group bonus
+            if screening.is_primary_in_group:
+                score += 15
+            
+            # No refinement needed bonus
+            if not screening.needs_refinement:
+                score += 10
+            
+            return score
+        
+        # Sort by score
+        scored = sorted(valid_candidates, key=score_candidate, reverse=True)
+        
+        # Select diverse images (max 2 per group)
+        selected = []
+        group_counts = {}
+        
+        for vp, screening in scored:
+            group_id = screening.group_id or "default"
+            current_count = group_counts.get(group_id, 0)
+            
+            if current_count < 2:  # Max 2 per group
+                selected.append((vp, screening))
+                group_counts[group_id] = current_count + 1
+                
+                if len(selected) >= max_images:
+                    break
+        
+        logger.info(f"Selected {len(selected)} best images from {len(valid_candidates)} valid candidates")
+        return selected
     
     async def _refine_captures(
         self, 
@@ -229,8 +313,16 @@ class BuildingCapturePipeline:
         tasks = [refine_single(vp, sc) for vp, sc in screened]
         results = await asyncio.gather(*tasks)
         
-        # Filter out None results (invalid faces)
-        return [r for r in results if r is not None]
+        # Filter out None results and assign image_id
+        final_results = []
+        image_id = 1
+        for r in results:
+            if r is not None:
+                r.image_id = image_id
+                final_results.append(r)
+                image_id += 1
+        
+        return final_results
     
     def _get_analysis_images(self, captures: List[CaptureResult]) -> List[str]:
         """Get best image URLs for building analysis."""

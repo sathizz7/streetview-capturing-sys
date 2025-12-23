@@ -69,57 +69,55 @@ Return a JSON object with this exact structure. Do NOT include any establishment
 
 FACE_SCREENING_PROMPT = """You are an expert at identifying and grouping FRONT-FACING building facades from a batch of Street View images.
 
-You will be given MULTIPLE candidate images for a target building. Each has a `candidate_index` and a `face_name`.
+You will be given MULTIPLE candidate images for a target building located at a specific lat/lon coordinate. Each image has a `candidate_index`.
 
 Your task is to evaluate ALL candidates and return a single JSON object containing an analysis for EACH one.
 
 PRIMARY GOALS
-1.  **Identify True Front Facades**: For each image, determine if it shows a primary, street-facing facade (commercial or residential), not a side/back wall.
-2.  **Reject Interior Views**: If the camera appears to be inside a shop, mall, lobby, interior corridor, or any indoor space, you MUST treat that image as **not** a valid front facade.
-3.  **Detect Billboards**: Note whether commercial signage is visible.
-4.  **Assess Quality**: Judge the framing, clarity, and any cropping issues.
-5.  **Group Similar Faces**: Compare all images to group together those that show the same underlying facade from different angles or perspectives. Use different group IDs only for genuinely distinct fronts (e.g., on an L-shaped building).
-6.  **Allow Multiple Complementary Views**: Within each group, allow multiple images that provide different perspectives of the same face to help with comprehensive building analysis.
+1.  **Identify the TARGET Building**: The target building is the one that should be centered in the frame, closest to the input coordinates. It is the building the camera is POINTED AT.
+2.  **Reject Wrong Buildings**: If a NEARBY/NEIGHBORING building dominates the center of the frame instead of the target, mark `is_target_building_primary` as `false`.
+3.  **Identify True Front Facades**: Determine if it shows a primary, street-facing facade (commercial or residential), not a side/back wall.
+4.  **Reject Interior Views**: If the camera appears to be inside a shop, mall, lobby, interior corridor, or any indoor space, treat it as **not** a valid front facade.
+5.  **Detect Road-Dominated Shots**: If road/traffic fills >30% of the bottom of the frame, mark `is_road_dominated` as `true`.
+6.  **Assess Building Coverage**: Estimate what percentage of the image frame is occupied by the TARGET building (0-100).
+7.  **Group Similar Faces**: Group images showing the same facade from different angles.
+8.  **Select Best Images**: Within each group, rank images by quality. Prefer images where:
+    - Target building is centered and dominant
+    - Building covers majority of frame
+    - Road does NOT dominate
+    - Full vertical view (roof to ground visible)
 
 EVALUATION CRITERIA FOR EACH IMAGE
--   **`is_valid_front_face` (boolean)**:
-    -   `true`: If it shows the main side of the building facing the street, typically with the main entrance, lobby, storefront, or a clear, symmetric pattern of windows/balconies. It looks like the "front" people use to enter or recognize the building.
-    -   `false`: If it's a mostly blank wall, service area (pipes, AC units), loading dock, or parking entrance. The composition feels like a side or back.
-    -   `false`: ALSO if the camera appears to be inside a shop, mall, lobby, interior corridor, or any interior space where the main visible scene is indoors rather than an exterior street-facing facade. These MUST NOT be treated as valid front faces.
--   **`has_visible_billboards` (boolean)**: `true` if commercial text, logos, or banners are on the facade. Residential fronts may have none; this is acceptable.
+-   **`is_valid_front_face` (boolean)**: `true` if showing the main street-facing side with entrance/storefront.
+-   **`is_target_building_primary` (boolean)**: 
+    -   `true`: If the TARGET building (the one camera is pointed at) is the dominant/centered structure.
+    -   `false`: If a NEARBY building takes up more space or is more prominent than the target.
+-   **`building_coverage_pct` (int 0-100)**: Percentage of frame occupied by the TARGET building (not neighboring buildings).
+-   **`is_road_dominated` (boolean)**: `true` if road/traffic fills >30% of the bottom half.
+-   **`has_visible_billboards` (boolean)**: `true` if commercial text, logos, or banners visible.
 -   **`clarity_assessment` (string)**: One of "excellent", "good", "acceptable", or "poor".
-    -   `"excellent"`: Facade is fully visible with a clear margin.
-    -   `"good"`: Minor cropping, but the facade is fully understandable.
-    -   `"acceptable"`: Noticeable cropping or mild occlusion, but still usable.
-    -   `"poor"`: Heavily cropped, strongly occluded, or very blurry.
--   **`needs_refinement` (boolean)**:
-    -   `true`: If the image is a side/back wall, clearly interior, or if the building is severely cropped/occluded.
-    -   `true`: **CRITICAL**: If the **ROOF** is cut off (cannot count floors) or the **ENTRANCE/GROUND** is cut off.
-    -   `true`: **ROAD DOMINATED**: If the bottom half is mostly road surface/traffic, pushing the building up and cutting the roof.
-    -   `false`: Only if the building is **VERTICALLY COMPLETE** (Roof to Ground is visible) and the shot is usable. Horizontal cropping is acceptable if the building is very wide.
-
-GROUPING AND SELECTION LOGIC
--   **`group_id` (string)**: Assign the same string label (e.g., "A", "B") to all images that capture the SAME building facade from different angles or perspectives. Use different labels only for genuinely different facades (e.g., front vs. side of an L-shaped building).
--   **`is_primary_in_group` (boolean)**: Within each `group_id`, set this to `true` for images that provide valuable complementary views of the same facade. Multiple images per group can be marked as primary if they provide different perspectives. Set to `false` only for near-duplicate images that don't add significant new information.
+-   **`needs_refinement` (boolean)**: `true` if roof/ground cut off, road dominated, or wrong building prominent.
+-   **`group_id` (string)**: Same label for images of the same facade from different angles.
+-   **`is_primary_in_group` (boolean)**: `true` for the BEST image(s) in each group based on coverage and quality.
 
 FINAL OUTPUT FORMAT
-Return ONLY a single JSON object with a "faces" key. The value should be a list of analysis objects, one for each input image. DO NOT include any extra text or comments outside the JSON.
-
-Multiple images of the same facade can be marked as primary if they provide complementary views for better building analysis.
+Return ONLY a single JSON object. DO NOT include any extra text.
 
 {
   "faces": [
     {
       "candidate_index": <int>,
-      "face_name": "<Face_0 or similar>",
       "group_id": "<string>",
       "is_primary_in_group": <boolean>,
       "is_valid_front_face": <boolean>,
+      "is_target_building_primary": <boolean>,
+      "building_coverage_pct": <int 0-100>,
+      "is_road_dominated": <boolean>,
       "has_visible_billboards": <boolean>,
       "confidence": <0-1 float>,
       "clarity_assessment": "<excellent|good|acceptable|poor>",
       "needs_refinement": <boolean>,
-      "suggestions": "<Explain your reasoning, mentioning if it's a front/side/back wall, whether it's interior vs exterior, and what to change>"
+      "suggestions": "<reasoning>"
     }
   ]
 }"""

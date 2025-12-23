@@ -65,6 +65,11 @@ class FaceScreeningResult:
     candidate_index: Optional[int] = None
     has_visible_billboards: bool = False
     
+    # Intelligent selection fields
+    building_coverage_pct: float = 0.0  # % of frame with target building (0-100)
+    is_target_building_primary: bool = True  # Is centered building the target?
+    is_road_dominated: bool = False  # Does road fill >30% of bottom?
+    
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
 
@@ -95,6 +100,7 @@ class CaptureResult:
     # Final metrics
     is_refined: bool = False
     final_quality_score: float = 0.0
+    image_id: Optional[int] = None  # 1, 2, 3 for selected best images
     
     def to_dict(self) -> Dict[str, Any]:
         result = {
@@ -102,7 +108,13 @@ class CaptureResult:
             "viewpoint": self.viewpoint.to_dict(),
             "is_refined": self.is_refined,
             "final_quality_score": self.final_quality_score,
+            "image_id": self.image_id,
         }
+        
+        # Add dynamic key for user request (image_url_1, image_url_2, etc.)
+        if self.image_id:
+            result[f"image_url_{self.image_id}"] = self.image_url
+            
         if self.screening_result:
             result["screening_result"] = self.screening_result.to_dict()
         if self.refinement_history:

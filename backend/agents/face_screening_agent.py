@@ -90,6 +90,10 @@ class FaceScreeningAgent(BaseAgent):
                     group_id=fs_data.get("group_id"),
                     is_primary_in_group=fs_data.get("is_primary_in_group"),
                     candidate_index=idx,
+                    # New intelligent selection fields
+                    building_coverage_pct=float(fs_data.get("building_coverage_pct", 0) or 0),
+                    is_target_building_primary=bool(fs_data.get("is_target_building_primary", True)),
+                    is_road_dominated=bool(fs_data.get("is_road_dominated", False)),
                 )
                 
             except (TypeError, ValueError, KeyError) as e:
