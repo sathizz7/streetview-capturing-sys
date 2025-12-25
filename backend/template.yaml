@@ -1,0 +1,352 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+
+Description: >
+  Building Detection V2 - Serverless API for building capture and analysis
+
+Parameters:
+  GoogleApiKey:
+    Type: String
+    Description: Google API Key
+    NoEcho: true
+
+  GeminiApiKey:
+    Type: String
+    Description: Gemini API Key
+    NoEcho: true
+
+  SecurityGroupId:
+    Type: String
+    Description: Security group to be attached to lambda functions
+    Default: ""
+
+  ApiStageName:
+    Type: String
+    Description: The stage name for the API Gateway
+    Default: "v2"
+
+  vpcSubnet1:
+    Type: String
+    Description: ID of subnet 1
+    Default: ""
+
+  vpcSubnet2:
+    Type: String
+    Description: ID of subnet 2
+    Default: ""
+
+  AddSubNet:
+    Type: String
+    Description: Decides whether to associate lambda functions to subnets
+    Default: "false"
+
+  AddSecurityGroup:
+    Type: String
+    Description: Decides whether to associate lambda functions to security groups
+    Default: "false"
+
+  LambdaLayerArn:
+    Type: String
+    Description: Lambda layer ARN (optional)
+    Default: ""
+
+  AllowedOrigins:
+    Type: String
+    Description: List of allowed origins for CORS
+    Default: "*"
+
+  EnvironmentTagName:
+    Type: String
+    Description: Tag name to identify the deployment environment
+    AllowedValues: [dev, test, uat, prod]
+    Default: dev
+
+  ApplicationTagName:
+    Type: String
+    Description: Tag name to identify the deployed application
+    Default: building-detection-v2
+
+  SecretKeyName:
+    Type: String
+    Description: Name of the secret in AWS Secrets Manager containing API keys
+    Default: building_detection_api_keys
+
+Conditions:
+  IsSecurityGroup: !Equals [!Ref AddSecurityGroup, "true"]
+  IsSubNet: !Equals [!Ref AddSubNet, "true"]
+  HasLambdaLayer: !Not [!Equals [!Ref LambdaLayerArn, ""]]
+
+Globals:
+  Function:
+    Timeout: 300
+    MemorySize: 1024
+    Runtime: python3.12
+    VpcConfig:
+      SecurityGroupIds:
+        - Fn::If:
+            - IsSecurityGroup
+            - !Ref SecurityGroupId
+            - Ref: AWS::NoValue
+      SubnetIds:
+        - Fn::If:
+            - IsSubNet
+            - !Ref vpcSubnet1
+            - Ref: AWS::NoValue
+        - Fn::If:
+            - IsSubNet
+            - !Ref vpcSubnet2
+            - Ref: AWS::NoValue
+    Tags:
+      Environment: !Ref EnvironmentTagName
+      Application: !Ref ApplicationTagName
+    Environment:
+      Variables:
+        GOOGLE_API_KEY: !Ref GoogleApiKey
+        # GOOGLE_API_KEY: !Sub "{{resolve:secretsmanager:${SecretKeyName}:SecretString:GOOGLE_API_KEY}}"
+        # GEMINI_API_KEY: !Sub "{{resolve:secretsmanager:${SecretKeyName}:SecretString:GEMINI_API_KEY}}"
+        GEMINI_API_KEY: !Ref GeminiApiKey
+        TABLE_NAME: !Ref BuildingRequestsTable
+        ALLOWED_ORIGINS: !Ref AllowedOrigins
+
+Resources:
+  # IAM Role for Lambda Functions
+  BuildingDetectionLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: BuildingDetectionLambdaPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ec2:CreateNetworkInterface
+                  - ec2:DescribeNetworkInterfaces
+                  - ec2:DeleteNetworkInterface
+                  - ec2:AssignPrivateIpAddresses
+                  - ec2:UnassignPrivateIpAddresses
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: "arn:aws:logs:*:*:*"
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource: !Sub "arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${SecretKeyName}-*"
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:Query
+                Resource: !GetAtt BuildingRequestsTable.Arn
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource: !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:ProcessBuildingFunction-${EnvironmentTagName}"
+
+  # DynamoDB Table
+  BuildingRequestsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "BuildingRequestsTable-${EnvironmentTagName}"
+      AttributeDefinitions:
+        - AttributeName: rev_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: rev_id
+          KeyType: HASH
+      BillingMode: PAY_PER_REQUEST
+
+  # API Gateway
+  BuildingCaptureApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: !Sub "building-detection-api-${EnvironmentTagName}"
+      StageName: !Ref ApiStageName
+      Cors:
+        AllowHeaders: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+        AllowMethods: "'GET,POST,OPTIONS'"
+        AllowOrigin: !Sub "'${AllowedOrigins}'"
+      EndpointConfiguration: REGIONAL
+      GatewayResponses:
+        DEFAULT_4XX:
+          ResponseParameters:
+            Headers:
+              Access-Control-Allow-Origin: !Sub "'${AllowedOrigins}'"
+              Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+        DEFAULT_5XX:
+          ResponseParameters:
+            Headers:
+              Access-Control-Allow-Origin: !Sub "'${AllowedOrigins}'"
+              Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+        ACCESS_DENIED:
+          StatusCode: "403"
+          ResponseParameters:
+            Headers:
+              Access-Control-Allow-Origin: !Sub "'${AllowedOrigins}'"
+          ResponseTemplates:
+            application/json: |
+              {
+                "status": "failure",
+                "message": $context.error.messageString
+              }
+      DefinitionBody:
+        swagger: "2.0"
+        info:
+          title: !Sub "building-detection-api-${EnvironmentTagName}"
+          version: "1.0"
+        paths:
+          /api/v2/create:
+            post:
+              security:
+                - NONE: []
+              x-amazon-apigateway-integration:
+                uri:
+                  Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ApiHandlerFunction.Arn}/invocations
+                responses: {}
+                httpMethod: POST
+                type: aws_proxy
+            options:
+              security:
+                - NONE: []
+              responses:
+                "200":
+                  description: "CORS support"
+                  headers:
+                    Access-Control-Allow-Origin:
+                      type: "string"
+                    Access-Control-Allow-Methods:
+                      type: "string"
+                    Access-Control-Allow-Headers:
+                      type: "string"
+              x-amazon-apigateway-integration:
+                type: "mock"
+                requestTemplates:
+                  application/json: '{"statusCode": 200}'
+                responses:
+                  default:
+                    statusCode: "200"
+                    responseParameters:
+                      method.response.header.Access-Control-Allow-Origin: !Sub "'${AllowedOrigins}'"
+                      method.response.header.Access-Control-Allow-Methods: "'OPTIONS,POST'"
+                      method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+          /api/v2/status/{rev_id}:
+            get:
+              security:
+                - NONE: []
+              x-amazon-apigateway-integration:
+                uri:
+                  Fn::Sub: arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${StatusHandlerFunction.Arn}/invocations
+                responses: {}
+                httpMethod: POST
+                type: aws_proxy
+            options:
+              security:
+                - NONE: []
+              responses:
+                "200":
+                  description: "CORS support"
+                  headers:
+                    Access-Control-Allow-Origin:
+                      type: "string"
+                    Access-Control-Allow-Methods:
+                      type: "string"
+                    Access-Control-Allow-Headers:
+                      type: "string"
+              x-amazon-apigateway-integration:
+                type: "mock"
+                requestTemplates:
+                  application/json: '{"statusCode": 200}'
+                responses:
+                  default:
+                    statusCode: "200"
+                    responseParameters:
+                      method.response.header.Access-Control-Allow-Origin: !Sub "'${AllowedOrigins}'"
+                      method.response.header.Access-Control-Allow-Methods: "'OPTIONS,GET'"
+                      method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+
+  # Lambda Functions
+  ProcessBuildingFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "ProcessBuildingFunction-${EnvironmentTagName}"
+      CodeUri: .
+      Handler: src/process_handler.lambda_handler
+      Role: !GetAtt BuildingDetectionLambdaRole.Arn
+      Layers:
+        - Fn::If:
+            - HasLambdaLayer
+            - !Ref LambdaLayerArn
+            - Ref: AWS::NoValue
+      Environment:
+        Variables:
+          PROCESSOR_FUNCTION: "self"
+
+  ApiHandlerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "ApiHandlerFunction-${EnvironmentTagName}"
+      CodeUri: .
+      Handler: src/api_handler.lambda_handler
+      Role: !GetAtt BuildingDetectionLambdaRole.Arn
+      Timeout: 30
+      MemorySize: 256
+      Layers:
+        - Fn::If:
+            - HasLambdaLayer
+            - !Ref LambdaLayerArn
+            - Ref: AWS::NoValue
+      Environment:
+        Variables:
+          PROCESSOR_FUNCTION: !GetAtt ProcessBuildingFunction.Arn
+      Events:
+        CreateRequest:
+          Type: Api
+          Properties:
+            RestApiId: !Ref BuildingCaptureApi
+            Path: /api/v2/create
+            Method: POST
+
+  StatusHandlerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "StatusHandlerFunction-${EnvironmentTagName}"
+      CodeUri: .
+      Handler: src/status_handler.lambda_handler
+      Role: !GetAtt BuildingDetectionLambdaRole.Arn
+      Timeout: 10
+      MemorySize: 256
+      Layers:
+        - Fn::If:
+            - HasLambdaLayer
+            - !Ref LambdaLayerArn
+            - Ref: AWS::NoValue
+      Events:
+        GetStatus:
+          Type: Api
+          Properties:
+            RestApiId: !Ref BuildingCaptureApi
+            Path: /api/v2/status/{rev_id}
+            Method: GET
+
+Outputs:
+  ApiUrl:
+    Description: "API Gateway endpoint URL"
+    Value: !Sub "https://${BuildingCaptureApi}.execute-api.${AWS::Region}.amazonaws.com/${ApiStageName}"
+  TableName:
+    Description: "DynamoDB Table Name"
+    Value: !Ref BuildingRequestsTable
+  ProcessFunctionArn:
+    Description: "Process Function ARN"
+    Value: !GetAtt ProcessBuildingFunction.Arn

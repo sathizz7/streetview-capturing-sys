@@ -13,3 +13,35 @@ python main.py --lat 17.40825329 --long 78.44931239
 #office -- python main.py --lat 12.974378709549043 --long 80.24956280449447
 
 python main.py --lat 17.41155948 --long 78.43503818
+
+python main.py --lat 13.037230351455024 --long 80.25705981519563 - kav hospital
+
+python main.py --lat 12.995254857769076 --long 80.1983572685588
+
+python main.py --lat 13.00050058605081 --long 80.20070619803981
+python main.py --lat 12.995744969331374 --long 80.19973825768112
+python main.py --lat 12.993951271658446 --long 80.20135392874093
+python main.py --lat 12.99393670433289 --long 80.2013181648791
+malls -- are not covered
+
+#karneegar street
+python main.py --lat 12.99386091201057 --long 80.2013034127294
+
+python main.py --lat 12.993697 --long 80.201328
+
+python main.py --lat 12.993450457060513 --long 80.20124096335056
+
+python main.py --lat 12.993025519475463 --long 80.2012318319065
+
+python main.py --lat 12.993256837457889 --long 80.20138024251659
+
+python main.py --lat 12.99316290525557 --long 80.20136756400461
+
+python main.py --lat 12.993106960605143 --long 80.2013747408342
+
+python main.py --lat 12.993947877916565 --long 80.2011559010963
+
+python main.py --lat 12.993733177158877 --long 80.20114875412624
+
+python main.py --lat 12.973457 --long 80.250768
+python main.py --lat 12.992917685127534 --long 80.20122032846416

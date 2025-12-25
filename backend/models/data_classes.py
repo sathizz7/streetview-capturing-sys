@@ -104,16 +104,18 @@ class CaptureResult:
     
     def to_dict(self) -> Dict[str, Any]:
         result = {
-            "image_url": self.image_url,
-            "viewpoint": self.viewpoint.to_dict(),
+            # "image_url": self.image_url,
+            # "viewpoint": self.viewpoint.to_dict(),
+            "image_id": self.image_id,
             "is_refined": self.is_refined,
             "final_quality_score": self.final_quality_score,
-            "image_id": self.image_id,
         }
         
         # Add dynamic key for user request (image_url_1, image_url_2, etc.)
         if self.image_id:
             result[f"image_url_{self.image_id}"] = self.image_url
+        else:
+            result["image_url"] = self.image_url
             
         if self.screening_result:
             result["screening_result"] = self.screening_result.to_dict()
