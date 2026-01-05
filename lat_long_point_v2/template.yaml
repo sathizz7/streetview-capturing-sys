@@ -101,7 +101,7 @@ Globals:
       Application: !Ref ApplicationTagName
     Environment:
       Variables:
-        GOOGLE_API_KEY: !Ref GoogleApiKey
+        GOOGLE_API_KEY: !Sub "{{resolve:secretsmanager:${SecretKeyName}:SecretString:GOOGLE_API_KEY}}"
         # GOOGLE_API_KEY: !Sub "{{resolve:secretsmanager:${SecretKeyName}:SecretString:GOOGLE_API_KEY}}"
         # GEMINI_API_KEY: !Sub "{{resolve:secretsmanager:${SecretKeyName}:SecretString:GEMINI_API_KEY}}"
         GEMINI_API_KEY: !Ref GeminiApiKey

@@ -1,0 +1,201 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+
+Description: >
+  Unified Building Detection Stack - Combines Polygon V1 and Lat/Long V2 under a central dispatcher.
+
+# ============================================================
+# PARAMETERS
+# ============================================================
+Parameters:
+  GoogleApiKey:
+    Type: String
+    Description: Google API Key
+    NoEcho: true
+
+  GeminiApiKey:
+    Type: String
+    Description: Gemini API Key
+    NoEcho: true
+
+  ApiStageName:
+    Type: String
+    Description: The stage name for the API Gateway
+    Default: "unified"
+
+  EnvironmentTagName:
+    Type: String
+    Description: Tag name to identify the deployment environment
+    AllowedValues: [dev, test, uat, prod]
+    Default: dev
+    
+  AllowedOrigins:
+    Type: String
+    Description: List of allowed origins for CORS
+    Default: "*"
+    
+  SecretKeyName:
+    Type: String
+    Description: Name of the secret in AWS Secrets Manager containing API keys
+    Default: Streetview-Api-Key
+
+# ============================================================
+# GLOBALS
+# ============================================================
+Globals:
+  Function:
+    Timeout: 300
+    MemorySize: 1024
+    Runtime: python3.12
+    Environment:
+      Variables:
+        GOOGLE_API_KEY: !Ref GoogleApiKey
+        GEMINI_API_KEY: !Ref GeminiApiKey
+        ALLOWED_ORIGINS: !Ref AllowedOrigins
+        TABLE_NAME: !Ref BuildingRequestsTable
+
+# ============================================================
+# RESOURCES
+# ============================================================
+Resources:
+
+  # 1. API GATEWAY
+  # --------------------------------------------------------
+  BuildingCaptureApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: !Sub "building-detection-unified-${EnvironmentTagName}"
+      StageName: !Ref ApiStageName
+      Cors:
+        AllowHeaders: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+        AllowMethods: "'GET,POST,OPTIONS'"
+        AllowOrigin: !Sub "'${AllowedOrigins}'"
+      GatewayResponses:
+        DEFAULT_4XX:
+          ResponseParameters:
+            Headers:
+              Access-Control-Allow-Origin: !Sub "'${AllowedOrigins}'"
+              Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+        DEFAULT_5XX:
+          ResponseParameters:
+            Headers:
+              Access-Control-Allow-Origin: !Sub "'${AllowedOrigins}'"
+              Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+
+  # 2. DISPATCHER FUNCTION
+  # --------------------------------------------------------
+  TypeRoutingFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "TypeRoutingFunction-${EnvironmentTagName}"
+      CodeUri: type/
+      Handler: app.lambda_handler
+      Timeout: 30
+      MemorySize: 256
+      Environment:
+        Variables:
+          V1_FUNCTION_NAME: !Ref PolygonFunction
+          V2_FUNCTION_NAME: !Ref ApiHandlerFunction
+      Policies:
+        - LambdaInvokePolicy:
+            FunctionName: !Ref PolygonFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref ApiHandlerFunction
+      Events:
+        DispatchRequest:
+          Type: Api
+          Properties:
+            RestApiId: !Ref BuildingCaptureApi
+            Path: /api/dispatch
+            Method: POST
+
+  # 3. POLYGON V1 FUNCTION
+  # --------------------------------------------------------
+  PolygonFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "PolygonFunction-${EnvironmentTagName}"
+      CodeUri: polygon_v1/
+      Handler: app.lambda_handler
+
+  # 4. LAT/LONG V2 FUNCTIONS
+  # --------------------------------------------------------
+  BuildingRequestsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "Unified-BuildingRequestsTable-${EnvironmentTagName}"
+      AttributeDefinitions:
+        - AttributeName: rev_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: rev_id
+          KeyType: HASH
+      BillingMode: PAY_PER_REQUEST
+
+  ProcessBuildingFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "Unified-ProcessBuildingFunction-${EnvironmentTagName}"
+      CodeUri: lat_long_point_v2/
+      Handler: src/process_handler.lambda_handler
+      Environment:
+        Variables:
+          PROCESSOR_FUNCTION: "self"
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref BuildingRequestsTable
+        - Statement:
+            - Effect: Allow
+              Action: secretsmanager:GetSecretValue
+              Resource: !Sub "arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:*"
+
+  ApiHandlerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "Unified-ApiHandlerFunction-${EnvironmentTagName}"
+      CodeUri: lat_long_point_v2/
+      Handler: src/api_handler.lambda_handler
+      Environment:
+        Variables:
+          PROCESSOR_FUNCTION: !Ref ProcessBuildingFunction
+      Policies:
+        - LambdaInvokePolicy:
+            FunctionName: !Ref ProcessBuildingFunction
+        - DynamoDBCrudPolicy:
+            TableName: !Ref BuildingRequestsTable
+      Events:
+        CreateRequest:
+          Type: Api
+          Properties:
+            RestApiId: !Ref BuildingCaptureApi
+            Path: /api/v2/create
+            Method: POST
+
+  StatusHandlerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "Unified-StatusHandlerFunction-${EnvironmentTagName}"
+      CodeUri: lat_long_point_v2/
+      Handler: src/status_handler.lambda_handler
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref BuildingRequestsTable
+      Events:
+        GetStatus:
+          Type: Api
+          Properties:
+            RestApiId: !Ref BuildingCaptureApi
+            Path: /api/v2/status/{rev_id}
+            Method: GET
+
+# ============================================================
+# OUTPUTS
+# ============================================================
+Outputs:
+  ApiUrl:
+    Description: "Unified Dispatch Endpoint"
+    Value: !Sub "https://${BuildingCaptureApi}.execute-api.${AWS::Region}.amazonaws.com/${ApiStageName}/api/dispatch"
+  
+  V2Url:
+    Description: "Direct V2 Endpoint"
+    Value: !Sub "https://${BuildingCaptureApi}.execute-api.${AWS::Region}.amazonaws.com/${ApiStageName}/api/v2/create"

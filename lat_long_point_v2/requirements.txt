@@ -1,0 +1,8 @@
+# Building Detection V2 - Backend
+
+litellm>=1.0.0
+requests>=2.28.0
+python-dotenv>=1.0.0
+googlemaps>=4.10.0
+shapely>=2.0.0
+pyproj>=3.6.0

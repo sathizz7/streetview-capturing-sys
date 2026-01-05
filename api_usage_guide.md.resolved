@@ -1,0 +1,89 @@
+# Unified Building Detection API Guide
+
+**Base URL**: `https://js0esy4xp6.execute-api.ap-south-1.amazonaws.com/dev`
+
+---
+
+## 1. Universal Dispatcher
+**Endpoint**: `POST /api/dispatch`
+
+This is the main entry point. It routes your request to the appropriate backend based on the `type` parameter.
+
+### A. Polygon V1 (Mock)
+**Use Case**: Execute the Polygon-based logic.
+
+**Request**:
+```json
+{
+    "type": "polygon",
+    "some_data": "test"
+}
+```
+
+**Response**:
+```json
+{
+    "message": "Polygon V1 Logic Executed Successfully (Mock)",
+    "input": { ... }
+}
+```
+
+**Curl Command**:
+```bash
+curl -X POST https://js0esy4xp6.execute-api.ap-south-1.amazonaws.com/dev/api/dispatch \
+  -H "Content-Type: application/json" \
+  -d '{"type": "polygon", "test": true}'
+```
+
+### B. Lat/Long V2 (Real Logic)
+**Use Case**: Execute the Lat/Long-based building capture (V2).
+
+**Request**:
+```json
+{
+    "type": "latlong",
+    "lat": 12.9716,
+    "lng": 77.5946
+}
+```
+
+**Response**:
+```json
+{
+    "status": "success",
+    "message": "Building capture process initiated",
+    "rev_id": "rev_123456789",
+    "status_url": "/api/v2/status/rev_123456789"
+}
+```
+
+**Curl Command**:
+```bash
+curl -X POST https://js0esy4xp6.execute-api.ap-south-1.amazonaws.com/dev/api/dispatch \
+  -H "Content-Type: application/json" \
+  -d '{"type": "latlong", "lat": 12.9716, "lng": 77.5946}'
+```
+
+---
+
+## 2. Direct V2 Endpoints (Advanced)
+You can still access the V2 backend directly if needed.
+
+### Create Request
+**Endpoint**: `POST /api/v2/create`
+
+**Request**:
+```json
+{
+    "lat": 12.9716,
+    "lng": 77.5946
+}
+```
+
+### Check Status
+**Endpoint**: `GET /api/v2/status/{rev_id}`
+
+**Curl Command**:
+```bash
+curl https://js0esy4xp6.execute-api.ap-south-1.amazonaws.com/dev/api/v2/status/rev_123456789
+```

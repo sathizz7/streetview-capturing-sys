@@ -62,43 +62,46 @@ Return a JSON object with this exact structure. Do NOT include any establishment
 -   **Completeness is Key**: list all the valid establishments on the target building. If you see a name of shop or residential building, list it.
 -   **Ignore Neighbors**: Only consider signboards that are clearly attached to the single chosen target building.
 -   **Empty Response**: If there are NO clear signboards or text on the target building, return an empty `establishments` array.
+-   **Handle Vacant Lands (CRITICAL)**:
+    - If the "Target" is clearly a **Vacant Plot**, **Empty Land**, or **Fenced Ground**:
+        - **Do NOT reject it**. Analyze it as "Vacant Land".
+        - **Ignore Background Buildings**: Do not list businesses from buildings far in the background or behind the fence.
+        - Return `establishments: []` (empty list).
+        - Set `building_usage_summary` to "Vacant Land" or "Empty Plot".
+        - In `visual_description`, describe the land (e.g., "Empty fenced plot with weeds", "Construction site").
 -   **No Hallucinations**: Do not guess or invent names. Only include what you can reasonably read from the image(s).
 -   **JSON Only**: Respond ONLY with the JSON object. Do not add any other commentary.
 """
 
 
-FACE_SCREENING_PROMPT = """You are an expert at identifying and grouping FRONT-FACING building facades from a batch of Street View images.
+FACE_SCREENING_PROMPT = """You are an expert at identifying and grouping FRONT-FACING building facades OR VACANT LAND PLOTS from a batch of Street View images.
 
-You will be given MULTIPLE candidate images for a target building located at a specific lat/lon coordinate. Each image has a `candidate_index`.
+You will be given MULTIPLE candidate images for a target location (lat/lon). Each image has a `candidate_index`.
 
 Your task is to evaluate ALL candidates and return a single JSON object containing an analysis for EACH one.
 
 PRIMARY GOALS
-1.  **Identify the TARGET Building**: The target building is the one that should be centered in the frame, closest to the input coordinates. It is the building the camera is POINTED AT.
-2.  **Reject Wrong Buildings**: If a NEARBY/NEIGHBORING building dominates the center of the frame instead of the target, mark `is_target_building_primary` as `false`.
-3.  **Identify True Front Facades**: Determine if it shows a primary, street-facing facade (commercial or residential), not a side/back wall.
-4.  **Reject Interior Views**: If the camera appears to be inside a shop, mall, lobby, interior corridor, or any indoor space, treat it as **not** a valid front facade.
-5.  **Detect Road-Dominated Shots**: If road/traffic fills >30% of the bottom of the frame, mark `is_road_dominated` as `true`.
-6.  **Assess Building Coverage**: Estimate what percentage of the image frame is occupied by the TARGET building (0-100).
-7.  **Group Similar Faces**: Group images showing the same facade from different angles.
-8.  **Select Best Images**: Within each group, rank images by quality. Prefer images where:
-    - Target building is centered and dominant
-    - Building covers majority of frame
-    - Road does NOT dominate
-    - Full vertical view (roof to ground visible)
+1.  **Identify the TARGET**: The target is either a **Building** OR a **Vacant Land/Plot** centered in the frame, closest to the input coordinates.
+2.  **Reject Wrong Targets**: If a NEARBY building dominates the center instead of the target (building or plot), mark `is_target_primary` as `false`.
+3.  **Identify True Fronts**: Determine if it shows the main street-facing side (for buildings) or the clear street-facing view of the plot (for vacant land).
+4.  **Reject Interior Views**: If the camera is inside a shop/mall, reject it.
+5.  **Detect Road-Dominated**: If road falls >50% of the frame (unless looking at a flat vacant plot where ground is the subject), mark `is_road_dominated`.
+6.  **Handle Vacant Lands (CRITICAL)**:
+    - If the target location appears to be an **Empty Plot**, **Vacant Ground**, or **Fenced Land**, ACCEPT IT as a valid target.
+    - **IGNORE BACKGROUND BUILDINGS**: Do NOT value distant buildings or buildings behind the plot/fence. They are neighbors, not the target.
+    - If the foreground is empty land, the "Face" is the land itself.
 
 EVALUATION CRITERIA FOR EACH IMAGE
--   **`is_valid_front_face` (boolean)**: `true` if showing the main street-facing side with entrance/storefront.
--   **`is_target_building_primary` (boolean)**: 
-    -   `true`: If the TARGET building (the one camera is pointed at) is the dominant/centered structure.
-    -   `false`: If a NEARBY building takes up more space or is more prominent than the target.
--   **`building_coverage_pct` (int 0-100)**: Percentage of frame occupied by the TARGET building (not neighboring buildings).
--   **`is_road_dominated` (boolean)**: `true` if road/traffic fills >30% of the bottom half.
--   **`has_visible_billboards` (boolean)**: `true` if commercial text, logos, or banners visible.
--   **`clarity_assessment` (string)**: One of "excellent", "good", "acceptable", or "poor".
--   **`needs_refinement` (boolean)**: `true` if roof/ground cut off, road dominated, or wrong building prominent.
--   **`group_id` (string)**: Same label for images of the same facade from different angles.
--   **`is_primary_in_group` (boolean)**: `true` for the BEST image(s) in each group based on coverage and quality.
+-   **`is_valid_front_face` (boolean)**: `true` if showing the main street-facing view of the building OR the full view of the vacant plot.
+-   **`is_vacant_land` (boolean)**: `true` if the target is an empty plot, open ground, or construction site without a main building.
+-   **`is_target_primary` (boolean)**: `true` if the TARGET (building or land) is the dominant/centered subject.
+-   **`building_coverage_pct` (int 0-100)**: Percentage of frame occupied by the target building (or target land area).
+-   **`is_road_dominated` (boolean)**: `true` if road/traffic fills >30% of the bottom half (Relax this for vacant land if the ground view is necessary).
+-   **`has_visible_billboards` (boolean)**: `true` if commercial text/boards visible (even on vacant land fences).
+-   **`clarity_assessment` (string)**: "excellent", "good", "acceptable", "poor".
+-   **`needs_refinement` (boolean)**: `true` if target is cut off, obstructed, or unclear.
+-   **`group_id` (string)**: Group ID for similar views.
+-   **`is_primary_in_group` (boolean)**: `true` for the best image in the group.
 
 FINAL OUTPUT FORMAT
 Return ONLY a single JSON object. DO NOT include any extra text.
@@ -110,7 +113,8 @@ Return ONLY a single JSON object. DO NOT include any extra text.
       "group_id": "<string>",
       "is_primary_in_group": <boolean>,
       "is_valid_front_face": <boolean>,
-      "is_target_building_primary": <boolean>,
+      "is_vacant_land": <boolean>,
+      "is_target_primary": <boolean>,
       "building_coverage_pct": <int 0-100>,
       "is_road_dominated": <boolean>,
       "has_visible_billboards": <boolean>,
