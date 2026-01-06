@@ -48,9 +48,26 @@ class ViewpointGenerator:
             viewpoint = self._create_viewpoint(
                 road_point, building_lat, building_lon
             )
+            
+            # Angle Validation: Reject if camera looks DOWN the road (Parallel)
+            # We want Side Views (~90 deg to road)
+            if road_point.road_heading is not None:
+                # Calculate angle difference modulo 180 (bidirectional road)
+                diff = abs(viewpoint.heading - road_point.road_heading) % 180
+                if diff > 90:
+                    diff = 180 - diff
+                
+                # Rule: Must be > 30 degrees (Road View is < 30)
+                if diff < 30:
+                    logger.info(f"Rejected viewpoint at {viewpoint.lat},{viewpoint.lon}: Parallel to road (angle_diff={diff:.1f}°)")
+                    continue
+                
+                # Store valid angle difference
+                viewpoint.angle_from_road = diff
+            
             viewpoints.append(viewpoint)
         
-        logger.info(f"Generated {len(viewpoints)} viewpoints")
+        logger.info(f"Generated {len(viewpoints)} viewpoints (filtered for angle)")
         return viewpoints
     
     def _create_viewpoint(

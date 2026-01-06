@@ -20,6 +20,7 @@ from models import Viewpoint, CaptureResult, BuildingAnalysis
 from services import GoogleMapsService, reverse_geocode
 from pipeline import RoadFinder, ViewpointGenerator
 from agents import FaceScreeningAgent, RefinementAgent, AnalysisAgent
+from utils import calculate_distance
 
 # Configure logging
 logging.basicConfig(
@@ -63,13 +64,14 @@ class BuildingCapturePipeline:
         
         logger.info("Building Capture Pipeline V2 initialized")
     
-    async def capture_building(self, lat: float, lon: float) -> Dict[str, Any]:
+    async def capture_building(self, lat: float, lon: float, skip_llm: bool = False) -> Dict[str, Any]:
         """
         Main entry point: Capture a building using only lat/long.
         
         Args:
             lat: Building latitude
             lon: Building longitude
+            skip_llm: If True, stops after Step 3 (Validation) and returns viewpoints.
             
         Returns:
             Dict with captures, analysis, and metadata
@@ -78,6 +80,8 @@ class BuildingCapturePipeline:
         logger.info(" BUILDING DETECTION V2 - LAT/LONG ONLY PIPELINE")
         logger.info("=" * 70)
         logger.info(f"Target: ({lat}, {lon})")
+        if skip_llm:
+            logger.info("Mode: NO-LLM (Geometry Validation Only)")
         
         start_time = time.time()
         
@@ -100,12 +104,27 @@ class BuildingCapturePipeline:
             
             # Step 3: Validate Street View availability
             logger.info("Step 3: Validating Street View availability...")
-            validated_viewpoints = await self._validate_streetview(viewpoints)
+            validated_viewpoints = await self._validate_streetview(
+                viewpoints, lat, lon
+            )
             
             if not validated_viewpoints:
-                return self._error_result("No Street View coverage at any viewpoint")
+                return self._error_result("No Street View coverage within 35m range")
             
             logger.info(f"Validated {len(validated_viewpoints)} viewpoints")
+            
+            # --- FAST EXIT IF NO LLM ---
+            if skip_llm:
+                elapsed = time.time() - start_time
+                logger.info(f"Pipeline complete (NO-LLM) in {elapsed:.2f}s")
+                return {
+                    "status": "success",
+                    "mode": "no_llm",
+                    "building_location": {"lat": lat, "lon": lon},
+                    "viewpoints_count": len(validated_viewpoints),
+                    "viewpoints": [vp.to_dict() for vp in validated_viewpoints],
+                    "execution_time_seconds": round(elapsed, 2)
+                }
             
             # Step 4: Screen faces with LLM
             logger.info("Step 4: Screening faces...")
@@ -149,9 +168,20 @@ class BuildingCapturePipeline:
     
     async def _validate_streetview(
         self, 
-        viewpoints: List[Viewpoint]
+        viewpoints: List[Viewpoint],
+        building_lat: float,
+        building_lon: float
     ) -> List[Viewpoint]:
-        """Validate Street View availability and update viewpoints with pano_id."""
+        """
+        Validate Street View availability and filter by distance.
+        
+        Args:
+            viewpoints: List of candidates
+            building_lat, building_lon: Target building coordinates
+            
+        Returns:
+            List of valid viewpoints within 35m range
+        """
         validated = []
         
         for viewpoint in viewpoints:
@@ -167,6 +197,19 @@ class BuildingCapturePipeline:
                 viewpoint.lon = actual_loc["lng"]
                 viewpoint.pano_id = metadata.get("pano_id")
                 viewpoint.capture_date = metadata.get("date")
+                
+                # RECALCULATE DISTANCE after snapping to actual pano location
+                new_distance = calculate_distance(
+                    viewpoint.lat, viewpoint.lon,
+                    building_lat, building_lon
+                )
+                viewpoint.distance_to_building = new_distance
+                
+                # FILTER: Reject if > 35 meters
+                if new_distance > 35.0:
+                    logger.info(f"Rejected viewpoint: Distance {new_distance:.1f}m > 35m constraint")
+                    continue
+
                 validated.append(viewpoint)
         
         return validated

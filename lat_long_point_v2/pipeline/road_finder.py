@@ -10,7 +10,8 @@ from typing import List
 
 from models import RoadPoint
 from services import GoogleMapsService
-from utils import calculate_position_offset, calculate_distance
+from services import GoogleMapsService
+from utils import calculate_position_offset, calculate_distance, calculate_bearing
 from config import get_settings
 
 logger = logging.getLogger(__name__)
@@ -88,7 +89,46 @@ class RoadFinder:
         
         # Limit to max candidates
         max_candidates = self.settings.max_candidates_per_building
-        return unique_points[:max_candidates]
+        final_points = unique_points[:max_candidates]
+        
+        # Calculate road headings for angle validation
+        self._calculate_road_headings(final_points)
+        
+        return final_points
+    
+    def _calculate_road_headings(self, points: List[RoadPoint]):
+        """
+        Estimate road heading for each point by analyzing neighbors on same road.
+        Group by road_name/placeId.
+        """
+        # Group by road
+        road_groups = {}
+        for p in points:
+            name = p.road_name or "unknown"
+            if name not in road_groups:
+                road_groups[name] = []
+            road_groups[name].append(p)
+            
+        # Calculate for each group
+        for name, group in road_groups.items():
+            if len(group) < 2:
+                continue
+                
+            # Ideally sort group by position along road, but linear sort by dist is ok proxy for now
+            # or just take bearing between any pair if they are close.
+            # We'll compute bearing from pt[i] to pt[i+1]
+            for i in range(len(group) - 1):
+                p1 = group[i]
+                p2 = group[i+1]
+                
+                heading = calculate_bearing(p1.lat, p1.lon, p2.lat, p2.lon)
+                
+                # Assign to both (if not already set, or overwrite)
+                # We use the segment heading.
+                # Note: Road is bidirectional, so heading X implies X and (X+180).
+                # Validation logic handles modulo 180.
+                p1.road_heading = heading
+                p2.road_heading = heading
     
     def _deduplicate(self, points: List[RoadPoint], tolerance: float = 5.0) -> List[RoadPoint]:
         """

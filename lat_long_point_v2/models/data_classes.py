@@ -16,6 +16,7 @@ class RoadPoint:
     road_type: str  # 'road', 'streetview', 'synthetic'
     distance_to_building: float = 0.0
     road_name: Optional[str] = None
+    road_heading: Optional[float] = None  # Estimated direction of the road (0-360)
     
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -45,6 +46,7 @@ class Viewpoint:
     
     # Source tracking
     road_type: str = "unknown"
+    angle_from_road: Optional[float] = None  # Angle difference between camera and road (0-180)
     
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
