@@ -13,6 +13,7 @@ sys.path.insert(0, parent_dir)
 
 from main import BuildingCapturePipeline
 from app.components.map_viewer import get_building_id
+from app.utils.geojson_helpers import update_feature_properties, update_geojson_collection, save_geojson_file
 
 
 def extract_polygon_from_geometry(geometry: dict) -> Optional[List[List[float]]]:
@@ -111,7 +112,8 @@ async def run_pipeline_async(building_data: Dict) -> Dict[str, Any]:
 
 async def run_single_building_with_status(
     building: Dict,
-    status_callback: callable = None
+    status_callback: callable = None,
+    result_callback: callable = None
 ) -> tuple:
     """
     Run pipeline for a single building with status updates.
@@ -119,6 +121,7 @@ async def run_single_building_with_status(
     Args:
         building: GeoJSON Feature
         status_callback: Async callback for status updates
+        result_callback: Async callback for result handling (persistence)
         
     Returns:
         Tuple of (building_id, result)
@@ -134,20 +137,27 @@ async def run_single_building_with_status(
         status = 'completed' if result.get('status') == 'success' else 'error'
         if status_callback:
             await status_callback(building_id, status)
+            
+        if result_callback:
+            await result_callback(building_id, building, result)
         
         return (building_id, result)
         
     except Exception as e:
+        error_res = {'status': 'error', 'message': str(e)}
         if status_callback:
             await status_callback(building_id, 'error')
-        return (building_id, {'status': 'error', 'message': str(e)})
+        if result_callback:
+             await result_callback(building_id, building, error_res)
+        return (building_id, error_res)
 
 
 async def run_batch_pipeline_async(
     buildings: List[Dict], 
     max_concurrent: int = 3,
     progress_callback: callable = None,
-    status_callback: callable = None
+    status_callback: callable = None,
+    result_callback: callable = None
 ) -> Dict[str, Any]:
     """
     Run the pipeline for a batch of buildings with concurrency control.
@@ -157,6 +167,7 @@ async def run_batch_pipeline_async(
         max_concurrent: Maximum number of concurrent pipelines (1-3)
         progress_callback: Optional async callback for progress updates (current, total, msg)
         status_callback: Optional async callback for per-building status updates (building_id, status)
+        result_callback: Optional async callback for result persistence
         
     Returns:
         Dict mapping building ID to results
@@ -181,7 +192,7 @@ async def run_batch_pipeline_async(
         
         # Run chunk concurrently
         tasks = [
-            run_single_building_with_status(b, status_callback)
+            run_single_building_with_status(b, status_callback, result_callback)
             for b in chunk
         ]
         
@@ -220,6 +231,22 @@ def render_pipeline_controls(
         Pipeline results dict or None
     """
     st.markdown("### 🚀 Analysis Controls")
+    
+    # Persistence callback
+    async def on_building_complete(b_id, building, result):
+        """Save result to session state and disk."""
+        if result.get('status') == 'success':
+            # Update feature properties
+            updated_building = update_feature_properties(building, result)
+            
+            # Update in global GeoJSON collection
+            if st.session_state.geojson_data:
+                update_geojson_collection(st.session_state.geojson_data, updated_building)
+                
+            # Auto-save to disk if file path exists
+            file_path = st.session_state.get('current_file_path')
+            if file_path and st.session_state.geojson_data:
+                save_geojson_file(st.session_state.geojson_data, file_path)
     
     # --- Batch Mode ---
     if batch_queue and len(batch_queue) > 0:
@@ -264,7 +291,8 @@ def render_pipeline_controls(
                         batch_queue, 
                         max_concurrent=max_concurrent,
                         progress_callback=update_progress,
-                        status_callback=update_status
+                        status_callback=update_status,
+                        result_callback=on_building_complete
                     ))
                     
                     # Clear progress
@@ -275,7 +303,7 @@ def render_pipeline_controls(
                     if on_step_change:
                         on_step_change(3)
                     
-                    st.success("✅ Batch Analysis Completed!")
+                    st.success(f"✅ Batch Analysis Completed! Results saved to {st.session_state.get('current_file_path', 'unknown')}")
                     return {'type': 'batch', 'results': results}
         
         with col2:
@@ -319,7 +347,15 @@ def render_pipeline_controls(
                 progress_placeholder.info("🔍 Processing building analysis...")
                 
                 try:
-                    result = asyncio.run(run_pipeline_async(building_data))
+
+                    # Run single pipeline using the wrapper to handle persistence
+                    result = asyncio.run(run_single_building_with_status(
+                        building_data, 
+                        result_callback=on_building_complete
+                    ))
+                    # Result is tuple (id, result)
+                    result = result[1]
+                    
                     progress_placeholder.empty()
                     
                     # Update status
@@ -331,7 +367,7 @@ def render_pipeline_controls(
                         on_step_change(3)
                     
                     if result.get('status') == 'success':
-                        st.success("✅ Analysis completed successfully!")
+                        st.success("✅ Analysis completed and saved!")
                         return {'type': 'single', 'results': result}
                     else:
                         st.error(f"❌ Pipeline failed: {result.get('message', 'Unknown error')}")

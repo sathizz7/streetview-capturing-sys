@@ -70,7 +70,8 @@ def enhance_geojson_with_results(geojson: dict, pipeline_results: dict) -> dict:
     # Extract only image URLs (user requested simple format)
     image_urls = []
     if pipeline_results.get('status') == 'success':
-        captures = pipeline_results.get('data', {}).get('captures', [])
+        # Results are at root level, not under 'data'
+        captures = pipeline_results.get('captures', [])
         image_urls = [c.get('image_url') for c in captures if c.get('image_url')]
     
     # Add to properties
@@ -81,7 +82,7 @@ def enhance_geojson_with_results(geojson: dict, pipeline_results: dict) -> dict:
         'status': pipeline_results.get('status'),
         'execution_time': pipeline_results.get('execution_time'),
         'image_urls': image_urls,
-        'analysis': pipeline_results.get('data', {}).get('analysis', {})
+        'analysis': pipeline_results.get('building_analysis', {})
     }
     
     return enhanced
@@ -146,3 +147,51 @@ def get_sample_geojson() -> dict:
             ]]
         }
     }
+
+
+def update_feature_properties(feature: dict, pipeline_results: dict) -> dict:
+    """
+    Update a feature's properties with pipeline results.
+    Wrapper around enhance_geojson_with_results.
+    """
+    return enhance_geojson_with_results(feature, pipeline_results)
+
+
+def update_geojson_collection(collection: dict, updated_feature: dict) -> bool:
+    """
+    Update a feature within a FeatureCollection in-place.
+    Matches based on latitude and longitude in properties.
+    
+    Args:
+        collection: The GeoJSON FeatureCollection dict (modified in-place)
+        updated_feature: The updated feature dict
+        
+    Returns:
+        True if feature was found and updated, False otherwise
+    """
+    if not collection or not updated_feature:
+        return False
+        
+    updated_props = updated_feature.get('properties', {})
+    u_lat = updated_props.get('latitude')
+    u_lon = updated_props.get('longitude')
+    
+    if u_lat is None or u_lon is None:
+        return False
+        
+    # Get features list
+    features = collection.get('features', [])
+    if not features and collection.get('type') == 'Feature':
+         # Single feature case - unlikely for "collection" but possible data structure
+         features = [collection]
+         
+    for i, f in enumerate(features):
+        props = f.get('properties', {})
+        # Use tolerance for float comparison? 
+        # Ideally exact match if we just processed it, but let's be safe with simple equality for now 
+        # as they come from the same source.
+        if props.get('latitude') == u_lat and props.get('longitude') == u_lon:
+            features[i] = updated_feature
+            return True
+            
+    return False

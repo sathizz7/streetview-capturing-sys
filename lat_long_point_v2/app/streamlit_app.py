@@ -80,6 +80,7 @@ def init_session_state():
         'current_step': 1,  # 1=Selection, 2=Analysis, 3=Results
         'processing_status': {},  # building_id -> status
         'max_concurrent': 3,
+        'current_file_path': None,  # Track loaded file path for persistence
     }
     
     for key, value in defaults.items():
@@ -157,7 +158,19 @@ def render_sidebar():
                     loaded_data = load_geojson_file(filepath)
                     if loaded_data:
                         st.session_state.geojson_data = loaded_data
-                        st.success(f"Loaded: {selected_file}")
+                        st.session_state.current_file_path = filepath
+                        
+                        # Populate processing status from existing results
+                        features = loaded_data.get('features', [loaded_data])
+                        processed_count = 0
+                        for f in features:
+                            props = f.get('properties', {})
+                            if 'pipeline_results' in props:
+                                f_id = get_building_id(f)
+                                st.session_state.processing_status[f_id] = 'completed'
+                                processed_count += 1
+                        
+                        st.success(f"Loaded: {selected_file} ({processed_count} previously analyzed)")
             else:
                 st.info("No files found in data/buildings/")
         
@@ -201,7 +214,17 @@ def render_sidebar():
                     }
                     indicator = status_colors.get(status, '⚪')
                     
-                    st.text(f"{indicator} {i+1}. ({props.get('latitude', 'N/A'):.4f}, {props.get('longitude', 'N/A'):.4f})")
+                    lat_val = props.get('latitude')
+                    lon_val = props.get('longitude')
+                    
+                    try:
+                        lat_str = f"{float(lat_val):.4f}" if lat_val is not None else "N/A"
+                        lon_str = f"{float(lon_val):.4f}" if lon_val is not None else "N/A"
+                    except (ValueError, TypeError):
+                        lat_str = str(lat_val) if lat_val is not None else "N/A"
+                        lon_str = str(lon_val) if lon_val is not None else "N/A"
+
+                    st.text(f"{indicator} {i+1}. ({lat_str}, {lon_str})")
             
             if st.button("🗑️ Clear Queue", use_container_width=True):
                 st.session_state.batch_queue = []
@@ -209,98 +232,128 @@ def render_sidebar():
                 st.rerun()
 
 
-def render_step_1_selection():
-    """Render Step 1: Building Selection with map."""
-    st.markdown("### Step 1: Building Selection")
-    st.caption("Select a parcel or building area on the map using the drawing tools.")
-    
-    # Tip
-    st.info("💡 Use the drawing tools at the top center of the map to select a polygon area.")
-    
-    # Main content area
-    col_map, col_controls = st.columns([2, 1])
-    
-    with col_map:
-        # Render map
-        if st.session_state.geojson_data:
-            # Determine map center
-            features = st.session_state.geojson_data.get('features', [st.session_state.geojson_data])
-            if features:
-                first_feature = features[0]
-                props = first_feature.get('properties', {})
-                
-                center_lat = props.get('latitude')
-                center_lon = props.get('longitude')
-                
-                # If not in properties, compute from geometry
-                if center_lat is None or center_lon is None:
-                    centroid = extract_centroid_from_geometry(first_feature.get('geometry'))
-                    if centroid:
-                        center_lat, center_lon = centroid
-                    else:
-                        center_lat, center_lon = 17.408, 78.451
-            else:
-                center_lat, center_lon = 17.408, 78.451
+
+def render_map_section():
+    """Render the shared map section and handle selection."""
+    if st.session_state.geojson_data:
+        # Determine map center
+        features = st.session_state.geojson_data.get('features', [st.session_state.geojson_data])
+        if features:
+            first_feature = features[0]
+            props = first_feature.get('properties', {})
+            center_lat = props.get('latitude')
+            center_lon = props.get('longitude')
             
-            map_data = render_map_viewer(
-                st.session_state.geojson_data,
-                center=(center_lat, center_lon),
-                zoom=16,
-                queued_buildings=st.session_state.batch_queue,
-                processing_status=st.session_state.processing_status,
-                selected_building=st.session_state.selected_building
-            )
-            
-            # Handle map clicks
-            if map_data and map_data.get('last_clicked'):
-                clicked_lat = map_data['last_clicked']['lat']
-                clicked_lon = map_data['last_clicked']['lng']
-                
-                # Find nearest building within 50m
-                selected = find_nearest_building(
-                    clicked_lat,
-                    clicked_lon,
-                    st.session_state.geojson_data,
-                    radius=50.0
-                )
-                
-                if selected:
-                    st.session_state.selected_building = selected
-                    st.rerun()
+            # If not in properties, compute from geometry
+            if center_lat is None or center_lon is None:
+                centroid = extract_centroid_from_geometry(first_feature.get('geometry'))
+                if centroid:
+                    center_lat, center_lon = centroid
                 else:
-                    st.warning("⚠️ No building found within 50m of click")
+                    center_lat, center_lon = 17.408, 78.451
         else:
-            st.info("📍 Load or upload GeoJSON data to display buildings on the map")
-    
-    with col_controls:
-        # Pipeline execution controls
-        pipeline_result = render_pipeline_controls(
-            st.session_state.selected_building,
-            batch_queue=st.session_state.batch_queue,
-            max_concurrent=st.session_state.max_concurrent,
-            on_step_change=set_step
+            center_lat, center_lon = 17.408, 78.451
+        
+        map_data = render_map_viewer(
+            st.session_state.geojson_data,
+            center=(center_lat, center_lon),
+            zoom=16,
+            queued_buildings=st.session_state.batch_queue,
+            processing_status=st.session_state.processing_status,
+            selected_building=st.session_state.selected_building
         )
         
-        if pipeline_result:
-            st.session_state.pipeline_results = pipeline_result
-            st.session_state.current_step = 3
-            st.rerun()
+        # Handle map clicks
+        if map_data and map_data.get('last_clicked'):
+            clicked_lat = map_data['last_clicked']['lat']
+            clicked_lon = map_data['last_clicked']['lng']
+            
+            # Find nearest building within 50m
+            selected = find_nearest_building(
+                clicked_lat,
+                clicked_lon,
+                st.session_state.geojson_data,
+                radius=50.0
+            )
+            
+            if selected:
+                # Only rerun if selection actually changed
+                current_id = get_building_id(st.session_state.selected_building) if st.session_state.selected_building else None
+                new_id = get_building_id(selected)
+                
+                if current_id != new_id:
+                    st.session_state.selected_building = selected
+                    st.rerun()
+            else:
+                st.warning("⚠️ No building found within 50m of click")
+    else:
+        st.info("📍 Load or upload GeoJSON data to display buildings on the map")
 
 
-def render_step_2_analysis():
-    """Render Step 2: Analysis in Progress."""
-    render_analysis_in_progress(
-        st.session_state.processing_status,
-        st.session_state.batch_queue or [st.session_state.selected_building]
-    )
+def render_step_content():
+    """Render content based on current step, maintaining map visibility."""
+    
+    # --- Layout Strategy ---
+    # We want the map to be visible in all steps.
+    # Step 1 & 2: Map on Left (2/3), Controls/Status on Right (1/3)
+    # Step 3: Map on Left (1/2) or Top, Results on Right/Bottom?
+    # Let's stick to 2-column layout for consistency for now.
+    
+    col_map, col_content = st.columns([2, 1])
+    
+    with col_map:
+        render_map_section()
+        
+    with col_content:
+        # --- Step 1: Selection & Controls ---
+        if st.session_state.current_step == 1:
+            st.markdown("### Step 1: Building Selection")
+            st.caption("Select a building on the map.")
+            
+            pipeline_result = render_pipeline_controls(
+                st.session_state.selected_building,
+                batch_queue=st.session_state.batch_queue,
+                max_concurrent=st.session_state.max_concurrent,
+                on_step_change=set_step
+            )
+            
+            if pipeline_result:
+                st.session_state.pipeline_results = pipeline_result
+                st.session_state.current_step = 3
+                st.rerun()
+        
+        # --- Step 2: Analysis Progress ---
+        elif st.session_state.current_step == 2:
+            render_analysis_in_progress(
+                st.session_state.processing_status,
+                st.session_state.batch_queue or [st.session_state.selected_building]
+            )
+            
+        # --- Step 3: Results Summary (Side) ---
+        elif st.session_state.current_step == 3:
+            st.markdown("### ✅ Analysis Complete")
+            if st.button("🔄 Start New Analysis", type="primary"):
+                 reset_analysis()
+            
+            # Show mini summary
+            if st.session_state.pipeline_results:
+                 res_type = st.session_state.pipeline_results.get('type')
+                 if res_type == 'batch':
+                     total = len(st.session_state.pipeline_results.get('results', {}))
+                     st.metric("Processed Buildings", total)
+                 else:
+                     st.success("Building processed successfully.")
+
+    # --- Full Width Results Section (Below Map) ---
+    if st.session_state.current_step == 3:
+        st.divider()
+        render_step_3_results()  # This renders the full results UI below
 
 
 def render_step_3_results():
     """Render Step 3: Analysis Results."""
     if not st.session_state.pipeline_results:
-        st.warning("No results available. Please run an analysis first.")
-        if st.button("↩️ Back to Selection"):
-            reset_analysis()
+        st.warning("No results available.")
         return
     
     # Handle Batch vs Single results
@@ -337,7 +390,7 @@ def render_step_3_results():
             on_new_analysis=reset_analysis
         )
     
-    # Fallback for direct results
+    # Fallback
     elif 'status' in st.session_state.pipeline_results:
         render_results_display(
             st.session_state.pipeline_results,
@@ -368,14 +421,7 @@ def main():
     st.divider()
     
     # Main content based on current step
-    if st.session_state.current_step == 1:
-        render_step_1_selection()
-    
-    elif st.session_state.current_step == 2:
-        render_step_2_analysis()
-    
-    elif st.session_state.current_step == 3:
-        render_step_3_results()
+    render_step_content()
 
 
 if __name__ == "__main__":

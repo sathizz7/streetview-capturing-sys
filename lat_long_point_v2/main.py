@@ -21,6 +21,7 @@ from services import GoogleMapsService, reverse_geocode
 from pipeline import RoadFinder, ViewpointGenerator
 from agents import FaceScreeningAgent, RefinementAgent, AnalysisAgent
 from utils import calculate_distance
+from utils.geocoding import snap_to_home_center
 
 # Configure logging
 logging.basicConfig(
@@ -95,6 +96,36 @@ class BuildingCapturePipeline:
         start_time = time.time()
         
         try:
+
+
+            
+            # Step 0: Refine coordinates
+            logger.info("Step 0: Refining coordinates...")
+            refined_location = snap_to_home_center(lat, lon)
+            
+            if refined_location and "lat" in refined_location and "lng" in refined_location:
+                 old_lat, old_lon = lat, lon
+                 lat = refined_location["lat"]
+                 lon = refined_location["lng"]
+                 dist_moved = calculate_distance(old_lat, old_lon, lat, lon)
+                 
+                 refinement_type = refined_location.get("type", "Unknown")
+                 address = refined_location.get("address", "N/A")
+                 
+                 logger.info(f"Refined location ({refinement_type}): Moved {dist_moved:.1f}m")
+                 logger.info(f"New Target: ({lat}, {lon}) - {address}")
+                 
+                 # Store metadata about refinement if useful for results
+                 self.refinement_metadata = {
+                     "original_lat": old_lat,
+                     "original_lon": old_lon,
+                     "distance_moved": dist_moved,
+                     "refinement_type": refinement_type,
+                     "address": address
+                 }
+            elif refined_location and "error" in refined_location:
+                 logger.warning(f"Coordinate refinement warning: {refined_location['error']}")
+            
             # Step 1: Find nearby roads
             logger.info("Step 1: Finding nearby roads...")
             road_points = await self.road_finder.find_candidate_roads(lat, lon)
