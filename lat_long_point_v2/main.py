@@ -64,7 +64,13 @@ class BuildingCapturePipeline:
         
         logger.info("Building Capture Pipeline V2 initialized")
     
-    async def capture_building(self, lat: float, lon: float, skip_llm: bool = False) -> Dict[str, Any]:
+    async def capture_building(
+        self, 
+        lat: float, 
+        lon: float, 
+        skip_llm: bool = False,
+        polygon: Optional[List[List[float]]] = None
+        ) -> Dict[str, Any]:
         """
         Main entry point: Capture a building using only lat/long.
         
@@ -72,6 +78,7 @@ class BuildingCapturePipeline:
             lat: Building latitude
             lon: Building longitude
             skip_llm: If True, stops after Step 3 (Validation) and returns viewpoints.
+            polygon: Optional list of [lat, lon] points defining building footprint.
             
         Returns:
             Dict with captures, analysis, and metadata
@@ -82,6 +89,8 @@ class BuildingCapturePipeline:
         logger.info(f"Target: ({lat}, {lon})")
         if skip_llm:
             logger.info("Mode: NO-LLM (Geometry Validation Only)")
+        if polygon:
+            logger.info("Mode: POLYGON-ASSISTED (Strict Frontage Logic)")
         
         start_time = time.time()
         
@@ -98,7 +107,7 @@ class BuildingCapturePipeline:
             # Step 2: Generate viewpoints
             logger.info("Step 2: Generating viewpoints...")
             viewpoints = self.viewpoint_generator.generate_viewpoints(
-                lat, lon, road_points
+                lat, lon, road_points, polygon
             )
             logger.info(f"Generated {len(viewpoints)} viewpoints")
             
@@ -405,19 +414,52 @@ class BuildingCapturePipeline:
         }
 
 
+
+# ==========================================
+# MANUAL CONFIGURATION (Ignored if CLI args provided)
+# ==========================================
+# Example: 17.408
+MANUAL_LAT = None
+# Example: 78.450
+MANUAL_LON = None
+# Format: List of [lat, lon] points. Example: [[17.408, 78.450], [17.4081, 78.4501], ...]
+MANUAL_POLYGON = None
+# ==========================================
+
+
 async def main():
     """CLI entry point."""
     parser = argparse.ArgumentParser(
         description="Building Detection V2 - Capture building using lat/long"
     )
-    parser.add_argument("--lat", type=float, required=True, help="Building latitude")
-    parser.add_argument("--lon", "--long", dest="lon", type=float, required=True, help="Building longitude")
+    # Make arguments optional to allow manual config fallback
+    parser.add_argument("--lat", type=float, required=False, help="Building latitude")
+    parser.add_argument("--lon", "--long", dest="lon", type=float, required=False, help="Building longitude")
     parser.add_argument("--output", type=str, help="Output JSON file path")
     
     args = parser.parse_args()
     
+    # Determine inputs (CLI takes precedence > Manual Config)
+    lat = args.lat if args.lat is not None else MANUAL_LAT
+    lon = args.lon if args.lon is not None else MANUAL_LON
+    polygon = MANUAL_POLYGON
+    
+    if lat is None or lon is None:
+        logger.error("❌ No coordinates provided!")
+        logger.error("Please provide --lat/--lon CLI arguments OR set MANUAL_LAT/MANUAL_LON in main.py")
+        return
+
+    # Check for simple polygon validity if provided
+    if polygon and not isinstance(polygon, list):
+         logger.warning("⚠️ Invalid polygon format in MANUAL_POLYGON. Expected list of lists. Ignoring polygon.")
+         polygon = None
+
     pipeline = BuildingCapturePipeline()
-    result = await pipeline.capture_building(args.lat, args.lon)
+    result = await pipeline.capture_building(
+        lat=lat, 
+        lon=lon,
+        polygon=polygon
+    )
     
     # Output
     output_json = json.dumps(result, indent=2)
